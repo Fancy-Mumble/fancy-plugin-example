@@ -9,7 +9,7 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 
-use axum::{Json, Router, extract::State, response::IntoResponse, routing};
+use axum::{extract::State, response::IntoResponse, routing, Json, Router};
 use serde_json::json;
 use tokio::net::TcpListener;
 
@@ -59,7 +59,11 @@ pub async fn start(
 
     tracing::info!(addr = %local_addr, "fancy-greeter: HTTP status page listening");
 
-    Ok(ServerHandle { shutdown_tx: Some(shutdown_tx), server_task, local_addr })
+    Ok(ServerHandle {
+        shutdown_tx: Some(shutdown_tx),
+        server_task,
+        local_addr,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -103,9 +107,7 @@ impl ServerHandle {
 // Request handler
 // ---------------------------------------------------------------------------
 
-async fn status_handler(
-    State(status): State<Arc<RwLock<StatusData>>>,
-) -> impl IntoResponse {
+async fn status_handler(State(status): State<Arc<RwLock<StatusData>>>) -> impl IntoResponse {
     let (sessions, template) = status
         .read()
         .map(|s| (s.active_sessions, s.greeting_template.clone()))

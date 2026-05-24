@@ -66,13 +66,17 @@ impl GreeterConfig {
     {
         let http_port = parse_optional::<u16>(&lookup, "http_port")?.unwrap_or(DEFAULT_HTTP_PORT);
 
-        let greeting_template = lookup("greeting_template")
-            .unwrap_or_else(|| DEFAULT_GREETING.to_owned());
+        let greeting_template =
+            lookup("greeting_template").unwrap_or_else(|| DEFAULT_GREETING.to_owned());
 
-        let farewell_template = lookup("farewell_template")
-            .unwrap_or_else(|| DEFAULT_FAREWELL.to_owned());
+        let farewell_template =
+            lookup("farewell_template").unwrap_or_else(|| DEFAULT_FAREWELL.to_owned());
 
-        Ok(Self { greeting_template, farewell_template, http_port })
+        Ok(Self {
+            greeting_template,
+            farewell_template,
+            http_port,
+        })
     }
 }
 
@@ -80,7 +84,9 @@ fn parse_optional<T: std::str::FromStr>(
     lookup: &dyn Fn(&str) -> Option<String>,
     key: &'static str,
 ) -> Result<Option<T>, ConfigError> {
-    let Some(raw) = lookup(key) else { return Ok(None) };
+    let Some(raw) = lookup(key) else {
+        return Ok(None);
+    };
     raw.parse::<T>()
         .map(Some)
         .map_err(|_| ConfigError::Parse { key, value: raw })
@@ -122,8 +128,7 @@ mod tests {
 
     #[test]
     fn custom_port_is_loaded() {
-        let cfg = GreeterConfig::from_lookup(lookup_from(&[("http_port", "9999")]))
-            .expect("loads");
+        let cfg = GreeterConfig::from_lookup(lookup_from(&[("http_port", "9999")])).expect("loads");
         assert_eq!(cfg.http_port, 9999);
     }
 
@@ -135,17 +140,18 @@ mod tests {
 
     #[test]
     fn custom_greeting_is_loaded() {
-        let cfg = GreeterConfig::from_lookup(lookup_from(&[(
-            "greeting_template",
-            "Hey {username}!",
-        )]))
-        .expect("loads");
+        let cfg =
+            GreeterConfig::from_lookup(lookup_from(&[("greeting_template", "Hey {username}!")]))
+                .expect("loads");
         assert_eq!(cfg.greeting_template, "Hey {username}!");
     }
 
     #[test]
     fn expand_replaces_username() {
-        assert_eq!(expand_template("Hello {username}!", "Alice"), "Hello Alice!");
+        assert_eq!(
+            expand_template("Hello {username}!", "Alice"),
+            "Hello Alice!"
+        );
         assert_eq!(expand_template("No placeholder", "Bob"), "No placeholder");
     }
 

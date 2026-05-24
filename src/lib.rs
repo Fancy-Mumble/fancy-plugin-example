@@ -40,9 +40,7 @@ pub mod types;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use abi_stable::std_types::{
-    RArc, ROk, ROption, RResult, RSlice, RStr, RString, RVec,
-};
+use abi_stable::std_types::{RArc, ROk, ROption, RResult, RSlice, RStr, RString, RVec};
 use mumble_plugin_api::{
     fancy_export_plugin, ClientInfo, DebugRow, MumblePlugin, PluginContext_TO, PluginError,
     PluginInfo, PluginMessageIn, PluginMessageOut, PluginResult, ServerId, SessionId,
@@ -51,9 +49,7 @@ use tokio::runtime::Runtime;
 
 use crate::config::GreeterConfig;
 use crate::server::{ServerHandle, StatusData};
-use crate::types::{
-    GreetingPayload, PingPayload, PongPayload, MSG_GREETING, MSG_PING, MSG_PONG,
-};
+use crate::types::{GreetingPayload, PingPayload, PongPayload, MSG_GREETING, MSG_PING, MSG_PONG};
 
 /// Stable plugin identifier - matches the `plugin.<name>.` INI prefix.
 const PLUGIN_NAME: &str = "fancy-greeter";
@@ -150,8 +146,14 @@ impl MumblePlugin for GreeterPlugin {
             homepage: Some("https://github.com/Fancy-Mumble".into()),
             capabilities: vec!["greeting".into(), "ping".into(), "http-status".into()],
             debug_rows: vec![
-                DebugRow { label: "active_sessions".into(), value: sessions.to_string() },
-                DebugRow { label: "http_port".into(), value: port.to_string() },
+                DebugRow {
+                    label: "active_sessions".into(),
+                    value: sessions.to_string(),
+                },
+                DebugRow {
+                    label: "http_port".into(),
+                    value: port.to_string(),
+                },
             ],
         };
 
@@ -182,7 +184,10 @@ impl MumblePlugin for GreeterPlugin {
 
         let http = match runtime.block_on(server::start(Arc::clone(&status), config.http_port)) {
             Ok(h) => {
-                tracing::info!(port = config.http_port, "fancy-greeter: HTTP status page ready");
+                tracing::info!(
+                    port = config.http_port,
+                    "fancy-greeter: HTTP status page ready"
+                );
                 Some(h)
             }
             Err(e) => {
@@ -247,11 +252,7 @@ impl MumblePlugin for GreeterPlugin {
         ROk(())
     }
 
-    fn on_client_disconnected(
-        &self,
-        server_id: ServerId,
-        session: SessionId,
-    ) -> PluginResult<()> {
+    fn on_client_disconnected(&self, server_id: ServerId, session: SessionId) -> PluginResult<()> {
         let _ = with_state_mut(&self.inner, |state| {
             let username = state
                 .sessions
@@ -388,7 +389,9 @@ fn reply_pong_via_data(
     data: &[u8],
     active_sessions: usize,
 ) {
-    let Some(bytes) = encode_pong(data, sender, active_sessions) else { return; };
+    let Some(bytes) = encode_pong(data, sender, active_sessions) else {
+        return;
+    };
     let result = ctx.send_plugin_data(
         server_id,
         sender,
@@ -434,7 +437,10 @@ fn encode_pong(data: &[u8], sender: SessionId, active_sessions: usize) -> Option
             return None;
         }
     };
-    match serde_json::to_vec(&PongPayload { nonce: ping.nonce, active_sessions }) {
+    match serde_json::to_vec(&PongPayload {
+        nonce: ping.nonce,
+        active_sessions,
+    }) {
         Ok(b) => Some(b),
         Err(e) => {
             tracing::warn!("fancy-greeter: serialize Pong failed: {e}");
