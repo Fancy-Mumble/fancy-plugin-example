@@ -53,11 +53,7 @@ tracing = "0.1"
 
 [lints.rust]
 unsafe_code = "deny"
-# "warn" rather than "deny": abi_stable's #[export_root_module] proc-macro
-# emits a pub static at the crate-root scope that cannot receive a doc comment
-# (it is generated inside fancy_export_plugin!, outside our control).  The
-# lint still fires as a warning so genuine missing docs are caught locally.
-missing_docs = "warn"
+missing_docs = "deny"
 unused_crate_dependencies = "warn"
 unused_results = "deny"
 missing_debug_implementations = "deny"
