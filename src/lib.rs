@@ -34,6 +34,7 @@
 //! mutate in-memory state and call back into the (sync) `ctx`.
 
 pub mod config;
+pub mod interactions;
 pub mod server;
 pub mod types;
 
@@ -44,6 +45,7 @@ use abi_stable::std_types::{RArc, ROk, ROption, RResult, RSlice, RStr, RString, 
 use mumble_plugin_api::{
     fancy_export_plugin, ClientInfo, DebugRow, MumblePlugin, PluginContext_TO, PluginError,
     PluginInfo, PluginMessageIn, PluginMessageOut, PluginResult, ServerId, SessionId,
+    INTERACTION_PAYLOAD_TYPE,
 };
 use tokio::runtime::Runtime;
 
@@ -155,6 +157,7 @@ impl MumblePlugin for GreeterPlugin {
                     value: port.to_string(),
                 },
             ],
+            client_manifest: Some(interactions::build_manifest()),
         };
 
         match info.to_validated_json() {
@@ -290,13 +293,20 @@ impl MumblePlugin for GreeterPlugin {
     }
 
     fn on_plugin_message(&self, msg: PluginMessageIn) -> PluginResult<()> {
-        if msg.payload_type.as_str() != MSG_PING {
-            return ROk(());
+        match msg.payload_type.as_str() {
+            MSG_PING => {
+                let _ = with_state(&self.inner, |state| {
+                    let active: usize = state.sessions.values().map(HashMap::len).sum();
+                    reply_pong_via_message(&state.ctx, &msg, active);
+                });
+            }
+            INTERACTION_PAYLOAD_TYPE => {
+                let _ = with_state(&self.inner, |state| {
+                    interactions::dispatch(&state.ctx, &msg);
+                });
+            }
+            _ => {}
         }
-        let _ = with_state(&self.inner, |state| {
-            let active: usize = state.sessions.values().map(HashMap::len).sum();
-            reply_pong_via_message(&state.ctx, &msg, active);
-        });
         ROk(())
     }
 }

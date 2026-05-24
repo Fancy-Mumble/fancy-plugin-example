@@ -52,6 +52,9 @@ jobs:
         working-directory: fancy-plugin
         run: cargo build --all-targets
 
+      # `cargo test --all-features` exercises every unit suite, including
+      # the Tier-1 client-extension dispatch tests in
+      # `src/interactions.rs` (slash command, button, modal, toast).
       - name: Test
         working-directory: fancy-plugin
         run: cargo test --all-features

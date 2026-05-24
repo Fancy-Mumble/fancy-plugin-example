@@ -19,6 +19,7 @@ the source.
 | **Greeting** | Sends a configurable welcome message to every user immediately after they connect. |
 | **Ping / Pong** | Responds to `Ping` plugin-messages from connected clients with a `Pong` that carries the current session count. |
 | **HTTP status page** | Serves `GET /status` (default port `64741`) so operators can confirm the plugin is running and view live stats. |
+| **Tier-1 client extensions** | Advertises a `ClientManifest` that declares the `/greet <name> [loud?]` slash command. Replies with a chat-style message + button; the button opens a modal; modal submission triggers a toast. End-to-end demo of every Tier-1 surface (slash command, component, modal, toast) with no client-side JavaScript. |
 
 ---
 
@@ -167,7 +168,47 @@ Example response:
 
 ## Client integration (TypeScript / FancyMumble)
 
-### Send a Ping
+### Try the slash command (no code required)
+
+With the plugin loaded and a Fancy Mumble client connected, type
+`/greet Alice` in any channel composer. The picker auto-completes
+known slash commands declared in the manifest; submitting the line
+ships an `Interaction` envelope to the plugin and renders the
+returned message card + button. Clicking the button opens a modal;
+submitting the modal triggers a toast.
+
+No frontend code is needed for any of this - the FancyMumble client
+ships a generic renderer that consumes the manifest declared in
+[`src/interactions.rs`](src/interactions.rs).
+
+### Send an Interaction manually
+
+If you are building your own client (or testing without the composer
+integration), build and ship an `Interaction` envelope yourself:
+
+```ts
+import { invoke } from "@tauri-apps/api/core";
+
+const interaction = {
+  kind: "slash-command",
+  name: "greet",
+  options: { name: "Alice", loud: true },
+  correlation_id: crypto.randomUUID(),
+  channel_id: null,
+};
+await invoke("send_plugin_message", {
+  pluginName: "fancy-greeter",
+  payloadType: "Interaction",
+  payload: Array.from(new TextEncoder().encode(JSON.stringify(interaction))),
+  targetSessions: [],
+  channelId: null,
+});
+```
+
+The plugin replies with an `InteractionResponse` envelope (payload
+type `"InteractionResponse"`) carrying the matching `correlation_id`.
+
+### Send a Ping (legacy demo)
 
 ```ts
 import { invoke } from "@tauri-apps/api/core";
@@ -206,6 +247,9 @@ await listen<{
     case "Pong":
       console.log(`Pong! nonce=${json.nonce} sessions=${json.active_sessions}`);
       break;
+    case "InteractionResponse":
+      console.log("Tier-1 response:", json);  // handled automatically by the client
+      break;
   }
 });
 ```
@@ -219,12 +263,14 @@ await listen<{
 | `Ping` | Client to Plugin | `{ "nonce": string }` |
 | `Pong` | Plugin to Client | `{ "nonce": string, "active_sessions": number }` |
 | `Greeting` | Plugin to Client | `{ "message": string }` |
+| `Interaction` | Client to Plugin | Tier-1 envelope: slash command invocation, component click, or modal submission. See [`mumble_plugin_api::Interaction`]. |
+| `InteractionResponse` | Plugin to Client | Tier-1 reply: message card with components, modal to open, message update, or toast. See [`mumble_plugin_api::InteractionResponse`]. |
 
 Inbound messages reach the plugin through two callbacks:
 
-* **`on_plugin_message`** (wire ID 200): the new generic
-  `PluginMessage` envelope. Each envelope is routed by `plugin_name`
-  to exactly one plugin.
+* **`on_plugin_message`** (wire ID 200): the generic `PluginMessage`
+  envelope. Each envelope is routed by `plugin_name` to exactly one
+  plugin. This is where Tier-1 `Interaction` envelopes arrive.
 * **`on_plugin_data`** (legacy `PluginDataTransmission`): broadcast
   flavour where every plugin sees every message.
 
@@ -237,10 +283,12 @@ both so it works against older Fancy Mumble clients as well.
 
 ```
 src/
-  lib.rs    - Plugin struct, MumblePlugin impl, fancy_export_plugin!
-  config.rs - INI config parsing and template expansion
-  server.rs - axum HTTP status page
-  types.rs  - Wire payload structs and MSG_* constants
+  lib.rs          - Plugin struct, MumblePlugin impl, fancy_export_plugin!
+  config.rs       - INI config parsing and template expansion
+  server.rs       - axum HTTP status page
+  types.rs        - Wire payload structs and MSG_* constants
+  interactions.rs - Tier-1 client manifest + Interaction dispatch
+                    (slash command, button, modal, toast demo)
 ```
 
 ---
@@ -276,6 +324,49 @@ ones your plugin needs; the rest default to no-ops.
        handle_my_event(&state.ctx, &msg);
    }
    ```
+
+### Adding a Tier-1 slash command
+
+Tier-1 commands are declared in the `ClientManifest` returned by
+`info_json` and dispatched in `on_plugin_message` whenever the
+incoming envelope carries `payload_type == "Interaction"`. See
+[`src/interactions.rs`](src/interactions.rs) for the full pattern.
+
+1. Append a `SlashCommand` to the manifest in `build_manifest()`:
+   ```rust
+   SlashCommand {
+       name: "echo".into(),
+       description: "Echo back a message".into(),
+       options: vec![SlashCommandOption {
+           name: "text".into(),
+           description: "What to echo".into(),
+           option_type: OptionType::String,
+           required: true,
+           choices: vec![],
+       }],
+   }
+   ```
+2. Branch on the command name inside `handle_interaction()`:
+   ```rust
+   InteractionKind::SlashCommand { name, options } if name == "echo" => {
+       let text = options.get("text")
+           .and_then(|v| if let OptionValue::String(s) = v { Some(s) } else { None })
+           .map(String::as_str)
+           .unwrap_or("");
+       Some(InteractionResponse {
+           correlation_id: Some(interaction.correlation_id.clone()),
+           kind: ResponseKind::Toast {
+               message: format!("Echo: {text}"),
+               level: ToastLevel::Info,
+           },
+       })
+   }
+   ```
+
+Component clicks and modal submissions follow the same pattern -
+match `InteractionKind::Component { custom_id, .. }` or
+`InteractionKind::ModalSubmit { custom_id, values }` and return the
+appropriate `ResponseKind`.
 
 ---
 
