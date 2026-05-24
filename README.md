@@ -93,9 +93,22 @@ After a release build you will find the artefact at:
 Plugins are loaded from one or more directories at runtime; no server
 recompile is required.
 
+> **Pre-built packages** — every push to `main` and every `v*` tag
+> produces a ready-to-use drop-in archive (Linux `.tar.gz`, macOS `.tar.gz`,
+> Windows `.zip`) under the
+> [**Actions**](../../actions) tab (or as a
+> [**Release**](../../releases) asset for tagged versions).  Each archive
+> contains the cdylib, `plugin.example.ini`, and this README.  Extract it
+> and follow the steps below.
+
 **Step 1 — copy the artefact** into the server's plugin directory:
 
 ```bash
+# From a CI archive:
+tar xzf fancy-greeter-linux-x86_64.tar.gz
+sudo install -m 0644 libfancy_greeter.so /etc/mumble/plugins/
+
+# Or from a local build:
 sudo install -m 0644 target/release/libfancy_greeter.so \
     /etc/mumble/plugins/
 ```
@@ -111,7 +124,15 @@ Override the search path with either the `plugins_dir` INI key or the
 `MUMBLE_PLUGIN_DIRS` environment variable (colon-separated on Unix,
 semicolon-separated on Windows).
 
-**Step 2 — enable the plugin** in `mumble-server.ini`:
+**Step 2 — enable the plugin** in `mumble-server.ini`.  The
+`plugin.example.ini` file (included in every CI archive) contains a
+fully annotated snippet you can copy-paste:
+
+```bash
+cat plugin.example.ini >> /etc/mumble/mumble-server.ini
+```
+
+Or add just the minimum:
 
 ```ini
 plugin.fancy-greeter.enabled=true

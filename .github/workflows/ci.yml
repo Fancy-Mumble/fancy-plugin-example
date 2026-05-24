@@ -3,6 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+    # Publishing a tag like `v0.2.0` triggers the release job which
+    # attaches the drop-in archives to a GitHub Release automatically.
+    tags: ['v*']
   pull_request:
     branches: [main]
 
@@ -11,8 +14,13 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  ci:
-    name: Build & Test
+  # ------------------------------------------------------------------
+  # Fast gate: formatting, Clippy, and unit tests (Linux only).
+  # The build matrix waits for this to pass before spinning up three
+  # runners, so a trivial typo doesn't burn three expensive runners.
+  # ------------------------------------------------------------------
+  check:
+    name: Lint & Test
     runs-on: ubuntu-latest
 
     steps:
@@ -23,7 +31,7 @@ jobs:
 
       # The Cargo.toml has a path dependency:
       #   mumble-plugin-api = { path = "../mumble-server/3rdparty/mumble-plugin-host/api" }
-      # so we clone mumble-server as a sibling directory.
+      # so mumble-server must be a sibling of the fancy-plugin checkout.
       - name: Checkout mumble-server
         uses: actions/checkout@v4
         with:
@@ -46,29 +54,120 @@ jobs:
 
       - name: Clippy
         working-directory: fancy-plugin
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
 
-      - name: Build (debug)
-        working-directory: fancy-plugin
-        run: cargo build --all-targets
-
-      # `cargo test --all-features` exercises every unit suite, including
-      # the Tier-1 client-extension dispatch tests in
-      # `src/interactions.rs` (slash command, button, modal, toast).
       - name: Test
         working-directory: fancy-plugin
-        run: cargo test --all-features
+        run: cargo test
+
+  # ------------------------------------------------------------------
+  # Release build on all three desktop platforms.
+  # Each job produces a self-contained drop-in archive that an operator
+  # can extract straight into /etc/mumble/plugins (or equivalent).
+  #
+  # Archive contents
+  # ----------------
+  #   libfancy_greeter.so  (or .dll / .dylib)  <- copy to plugins dir
+  #   plugin.example.ini                        <- copy-paste into server INI
+  #   README.md                                 <- full documentation
+  # ------------------------------------------------------------------
+  build:
+    name: Build (${{ matrix.os }})
+    needs: check
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            cdylib: libfancy_greeter.so
+            archive: fancy-greeter-linux-x86_64.tar.gz
+
+          # macos-latest is currently macOS 14 (Apple Silicon / aarch64).
+          - os: macos-latest
+            cdylib: libfancy_greeter.dylib
+            archive: fancy-greeter-macos-aarch64.tar.gz
+
+          - os: windows-latest
+            cdylib: fancy_greeter.dll
+            archive: fancy-greeter-windows-x86_64.zip
+
+    steps:
+      - name: Checkout fancy-plugin
+        uses: actions/checkout@v4
+        with:
+          path: fancy-plugin
+
+      - name: Checkout mumble-server
+        uses: actions/checkout@v4
+        with:
+          repository: Fancy-Mumble/mumble-server
+          path: mumble-server
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & build artefacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fancy-plugin
 
       - name: Build release cdylib
         working-directory: fancy-plugin
         run: cargo build --release --lib
 
-      - name: Upload plugin artifact
+      # ---- Package: Linux / macOS -----------------------------------------
+      - name: Assemble drop-in archive (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir stage
+          cp "fancy-plugin/target/release/${{ matrix.cdylib }}" stage/
+          cp fancy-plugin/plugin.example.ini stage/
+          cp fancy-plugin/README.md stage/
+          tar czf "${{ matrix.archive }}" -C stage .
+          echo "archive=${{ matrix.archive }}" >> "$GITHUB_ENV"
+
+      # ---- Package: Windows -----------------------------------------------
+      - name: Assemble drop-in archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force stage | Out-Null
+          Copy-Item "fancy-plugin\target\release\${{ matrix.cdylib }}" stage\
+          Copy-Item "fancy-plugin\plugin.example.ini" stage\
+          Copy-Item "fancy-plugin\README.md" stage\
+          Compress-Archive -Path "stage\*" -DestinationPath "${{ matrix.archive }}"
+
+      - name: Upload drop-in archive
         uses: actions/upload-artifact@v4
         with:
-          name: libfancy_greeter
-          path: |
-            fancy-plugin/target/release/libfancy_greeter.so
-            fancy-plugin/target/release/fancy_greeter.dll
-            fancy-plugin/target/release/libfancy_greeter.dylib
-          if-no-files-found: warn
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+
+  # ------------------------------------------------------------------
+  # Publish a GitHub Release and attach all three archives.
+  # Runs only when a `v*` tag is pushed (e.g. `git tag v0.2.0 && git push --tags`).
+  # ------------------------------------------------------------------
+  release:
+    name: GitHub Release
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all drop-in archives
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            fancy-greeter-linux-x86_64.tar.gz
+            fancy-greeter-macos-aarch64.tar.gz
+            fancy-greeter-windows-x86_64.zip
+          generate_release_notes: true

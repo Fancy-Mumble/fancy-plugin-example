@@ -10,9 +10,10 @@
 use abi_stable::std_types::{ROption, RString, RVec};
 use mumble_plugin_api::{
     ActionRow, Button, ButtonStyle, Capability, ClientManifest, Component, Interaction,
-    InteractionKind, InteractionResponse, OptionType, OptionValue, PluginContext_TO,
-    PluginMessageIn, PluginMessageOut, ResponseKind, SessionId, SlashCommand, SlashCommandOption,
-    TextInput, TextInputStyle, ToastLevel, INTERACTION_RESPONSE_PAYLOAD_TYPE,
+    InteractionKind, InteractionResponse, OptionType, OptionValue, PanelRow, PluginContext_TO,
+    PluginMessageIn, PluginMessageOut, ResponseKind, SessionId, SettingsPanel, SlashCommand,
+    SlashCommandOption, TextInput, TextInputStyle, ToastLevel,
+    INTERACTION_RESPONSE_PAYLOAD_TYPE,
 };
 
 use crate::PLUGIN_NAME;
@@ -57,8 +58,22 @@ pub fn build_manifest() -> ClientManifest {
             Capability::Components,
             Capability::Modals,
             Capability::Notifications,
+            Capability::SettingsPanel,
         ],
-        settings_panels: vec![],
+        settings_panels: vec![SettingsPanel {
+            id: "status".into(),
+            title: "Greeter status".into(),
+            rows: vec![
+                PanelRow {
+                    label: "Greeting template".into(),
+                    value: "Welcome, {username}!".into(),
+                },
+                PanelRow {
+                    label: "Tier-1 demo".into(),
+                    value: "Type /greet <name> [loud=true] to try it".into(),
+                },
+            ],
+        }],
         ..ClientManifest::default()
     }
 }
