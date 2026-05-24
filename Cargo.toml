@@ -1,0 +1,76 @@
+[package]
+name = "fancy-greeter"
+version = "0.1.0"
+edition = "2021"
+description = "Example Fancy Mumble server plugin - annotated reference implementation"
+license = "MIT"
+
+# This crate is a dynamically loaded plugin.
+#
+# - `cdylib` is what the Mumble plugin host actually dlopen()s from the
+#   `/etc/mumble/plugins` directory at runtime.
+# - `rlib` is kept around so unit and integration tests can link the
+#   plugin like an ordinary Rust library.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The ABI-stable plugin API.  Path dependency points at the Fancy Mumble
+# server checkout next to this repo; switch to a `git` or `version`
+# reference once `mumble-plugin-api` is published.
+mumble-plugin-api = { path = "../mumble-server/3rdparty/mumble-plugin-host/api" }
+
+# Required for the FFI-safe trait objects (`RStr`, `RString`, `RArc`,
+# `ROption`, `RVec`, `RResult`).  Must match the version used by the
+# host (currently 0.11) or the loader will reject the cdylib.
+abi_stable = "0.11"
+
+# Each plugin owns its private tokio runtime - the host calls our trait
+# methods synchronously across the FFI boundary, so anything async (the
+# HTTP server, future network I/O) must be driven by a runtime we manage
+# ourselves.
+tokio = { version = "1", features = ["net", "sync", "macros", "time", "rt-multi-thread"] }
+
+# HTTP status page served at http://127.0.0.1:<http_port>/status
+axum = "0.8"
+
+# Serialisation for the wire-level message payloads
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error types
+thiserror = "2"
+
+# Structured logging.  The host already initialises the global tracing
+# subscriber; plugins just emit spans and events.
+tracing = "0.1"
+
+[dev-dependencies]
+
+# ---- Lint configuration ---------------------------------------------------
+# These mirror the workspace-wide lints from mumble-plugin-host so the
+# example compiles cleanly in the same CI environment.
+
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "deny"
+unused_crate_dependencies = "warn"
+unused_results = "deny"
+missing_debug_implementations = "deny"
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+
+[lints.clippy]
+correctness    = { level = "deny",  priority = -1 }
+suspicious     = { level = "warn",  priority = -1 }
+style          = { level = "warn",  priority = -1 }
+perf           = { level = "warn",  priority = -1 }
+unwrap_used            = "deny"
+excessive_nesting      = "deny"
+too_many_lines         = "deny"
+allow_attributes_without_reason = "deny"
+uninlined_format_args  = "warn"
+doc_markdown           = "warn"

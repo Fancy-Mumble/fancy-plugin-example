@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  ci:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fancy-plugin
+        uses: actions/checkout@v4
+        with:
+          path: fancy-plugin
+
+      # The Cargo.toml has a path dependency:
+      #   mumble-plugin-api = { path = "../mumble-server/3rdparty/mumble-plugin-host/api" }
+      # so we clone mumble-server as a sibling directory.
+      - name: Checkout mumble-server
+        uses: actions/checkout@v4
+        with:
+          repository: Fancy-Mumble/mumble-server
+          path: mumble-server
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry & build artefacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fancy-plugin
+
+      - name: Check formatting
+        working-directory: fancy-plugin
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        working-directory: fancy-plugin
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Build (debug)
+        working-directory: fancy-plugin
+        run: cargo build --all-targets
+
+      - name: Test
+        working-directory: fancy-plugin
+        run: cargo test --all-features
+
+      - name: Build release cdylib
+        working-directory: fancy-plugin
+        run: cargo build --release --lib
+
+      - name: Upload plugin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libfancy_greeter
+          path: |
+            fancy-plugin/target/release/libfancy_greeter.so
+            fancy-plugin/target/release/fancy_greeter.dll
+            fancy-plugin/target/release/libfancy_greeter.dylib
+          if-no-files-found: warn
