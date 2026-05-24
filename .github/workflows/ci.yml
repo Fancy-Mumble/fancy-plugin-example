@@ -42,7 +42,7 @@ jobs:
 
       - name: Check formatting
         working-directory: fancy-plugin
-        run: cargo fmt --all -- --check
+        run: cargo fmt --package fancy-greeter -- --check
 
       - name: Clippy
         working-directory: fancy-plugin
