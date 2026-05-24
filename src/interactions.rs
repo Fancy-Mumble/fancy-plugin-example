@@ -68,15 +68,15 @@ pub fn build_manifest() -> ClientManifest {
 /// `None` if the envelope is not addressed to this plugin's flow.
 pub fn handle_interaction(interaction: Interaction) -> Option<InteractionResponse> {
     match interaction.kind {
-        InteractionKind::SlashCommand { name, options } if name == CMD_GREET => Some(
-            greet_response(&interaction.correlation_id, &options),
-        ),
+        InteractionKind::SlashCommand { name, options } if name == CMD_GREET => {
+            Some(greet_response(&interaction.correlation_id, &options))
+        }
         InteractionKind::Component { custom_id, .. } if custom_id == COMPONENT_GREET_AGAIN => {
             Some(open_greet_modal(&interaction.correlation_id))
         }
-        InteractionKind::ModalSubmit { custom_id, values } if custom_id == MODAL_GREET => Some(
-            modal_submit_response(&interaction.correlation_id, &values),
-        ),
+        InteractionKind::ModalSubmit { custom_id, values } if custom_id == MODAL_GREET => {
+            Some(modal_submit_response(&interaction.correlation_id, &values))
+        }
         _ => None,
     }
 }
