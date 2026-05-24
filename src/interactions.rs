@@ -12,8 +12,7 @@ use mumble_plugin_api::{
     ActionRow, Button, ButtonStyle, Capability, ClientManifest, Component, Interaction,
     InteractionKind, InteractionResponse, OptionType, OptionValue, PanelRow, PluginContext_TO,
     PluginMessageIn, PluginMessageOut, ResponseKind, SessionId, SettingsPanel, SlashCommand,
-    SlashCommandOption, TextInput, TextInputStyle, ToastLevel,
-    INTERACTION_RESPONSE_PAYLOAD_TYPE,
+    SlashCommandOption, TextInput, TextInputStyle, ToastLevel, INTERACTION_RESPONSE_PAYLOAD_TYPE,
 };
 
 use crate::PLUGIN_NAME;
