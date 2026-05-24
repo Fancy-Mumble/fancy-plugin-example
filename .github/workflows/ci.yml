@@ -84,6 +84,10 @@ jobs:
             cdylib: libfancy_greeter.so
             archive: fancy-greeter-linux-x86_64.tar.gz
 
+          - os: ubuntu-24.04-arm
+            cdylib: libfancy_greeter.so
+            archive: fancy-greeter-linux-aarch64.tar.gz
+
           # macos-latest is currently macOS 14 (Apple Silicon / aarch64).
           - os: macos-latest
             cdylib: libfancy_greeter.dylib
@@ -168,6 +172,7 @@ jobs:
         with:
           files: |
             fancy-greeter-linux-x86_64.tar.gz
+            fancy-greeter-linux-aarch64.tar.gz
             fancy-greeter-macos-aarch64.tar.gz
             fancy-greeter-windows-x86_64.zip
           generate_release_notes: true
