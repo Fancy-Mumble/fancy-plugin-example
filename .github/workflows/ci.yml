@@ -4,7 +4,8 @@ on:
   push:
     branches: [main]
     # Publishing a tag like `v0.2.0` triggers the release job which
-    # attaches the drop-in archives to a GitHub Release automatically.
+    # attaches every example's drop-in archive to a GitHub Release
+    # automatically.
     tags: ['v*']
   pull_request:
     branches: [main]
@@ -15,9 +16,9 @@ env:
 
 jobs:
   # ------------------------------------------------------------------
-  # Fast gate: formatting, Clippy, and unit tests (Linux only).
-  # The build matrix waits for this to pass before spinning up three
-  # runners, so a trivial typo doesn't burn three expensive runners.
+  # Fast gate: formatting, Clippy, and unit tests for the whole
+  # workspace.  The build matrix waits for this to pass before
+  # spinning up per-example runners.
   # ------------------------------------------------------------------
   check:
     name: Lint & Test
@@ -29,7 +30,7 @@ jobs:
         with:
           path: fancy-plugin
 
-      # The Cargo.toml has a path dependency:
+      # The workspace Cargo.toml has a path dependency:
       #   mumble-plugin-api = { path = "../mumble-server/3rdparty/mumble-plugin-host/api" }
       # so mumble-server must be a sibling of the fancy-plugin checkout.
       - name: Checkout mumble-server
@@ -50,52 +51,71 @@ jobs:
 
       - name: Check formatting
         working-directory: fancy-plugin
-        run: cargo fmt --package fancy-greeter -- --check
+        run: cargo fmt --all -- --check
 
       - name: Clippy
         working-directory: fancy-plugin
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Test
         working-directory: fancy-plugin
-        run: cargo test
+        run: cargo test --workspace
 
   # ------------------------------------------------------------------
-  # Release build on all three desktop platforms.
-  # Each job produces a self-contained drop-in archive that an operator
-  # can extract straight into /etc/mumble/plugins (or equivalent).
+  # Per-example release build, on every desktop platform.
   #
-  # Archive contents
-  # ----------------
-  #   libfancy_greeter.so  (or .dll / .dylib)  <- copy to plugins dir
-  #   plugin.example.ini                        <- copy-paste into server INI
-  #   README.md                                 <- full documentation
+  # The matrix is the cross product of (example x platform).  Each job
+  # produces a self-contained drop-in archive containing the cdylib,
+  # the per-example INI snippet and the per-example README.
   # ------------------------------------------------------------------
   build:
-    name: Build (${{ matrix.os }})
+    name: Build ${{ matrix.example.crate }} (${{ matrix.platform.os }})
     needs: check
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.platform.os }}
 
     strategy:
       fail-fast: false
       matrix:
-        include:
+        # ---- One entry per workspace member ---------------------------
+        # `crate` is the Cargo package name; `lib_stem` is the cdylib
+        # base name as Rust produces it (`-` is rewritten to `_`).
+        example:
+          - crate: fancy-greeter
+            lib_stem: fancy_greeter
+            dir: examples/greeter
+          - crate: fancy-gallery-showcase
+            lib_stem: fancy_gallery_showcase
+            dir: examples/gallery-showcase
+          - crate: fancy-info-card
+            lib_stem: fancy_info_card
+            dir: examples/info-card
+          - crate: fancy-feedback-form
+            lib_stem: fancy_feedback_form
+            dir: examples/feedback-form
+
+        # ---- One entry per target platform ----------------------------
+        platform:
           - os: ubuntu-latest
-            cdylib: libfancy_greeter.so
-            archive: fancy-greeter-linux-x86_64.tar.gz
-
+            arch: linux-x86_64
+            ext: so
+            prefix: lib
+            packager: tar
           - os: ubuntu-24.04-arm
-            cdylib: libfancy_greeter.so
-            archive: fancy-greeter-linux-aarch64.tar.gz
-
+            arch: linux-aarch64
+            ext: so
+            prefix: lib
+            packager: tar
           # macos-latest is currently macOS 14 (Apple Silicon / aarch64).
           - os: macos-latest
-            cdylib: libfancy_greeter.dylib
-            archive: fancy-greeter-macos-aarch64.tar.gz
-
+            arch: macos-aarch64
+            ext: dylib
+            prefix: lib
+            packager: tar
           - os: windows-latest
-            cdylib: fancy_greeter.dll
-            archive: fancy-greeter-windows-x86_64.zip
+            arch: windows-x86_64
+            ext: dll
+            prefix: ""
+            packager: zip
 
     steps:
       - name: Checkout fancy-plugin
@@ -119,39 +139,45 @@ jobs:
 
       - name: Build release cdylib
         working-directory: fancy-plugin
-        run: cargo build --release --lib
+        run: cargo build --release --lib -p ${{ matrix.example.crate }}
 
       # ---- Package: Linux / macOS -----------------------------------------
       - name: Assemble drop-in archive (Linux / macOS)
-        if: runner.os != 'Windows'
+        if: matrix.platform.packager == 'tar'
         run: |
+          set -eu
+          lib_name="${{ matrix.platform.prefix }}${{ matrix.example.lib_stem }}.${{ matrix.platform.ext }}"
+          archive="${{ matrix.example.crate }}-${{ matrix.platform.arch }}.tar.gz"
           mkdir stage
-          cp "fancy-plugin/target/release/${{ matrix.cdylib }}" stage/
-          cp fancy-plugin/plugin.example.ini stage/
-          cp fancy-plugin/README.md stage/
-          tar czf "${{ matrix.archive }}" -C stage .
-          echo "archive=${{ matrix.archive }}" >> "$GITHUB_ENV"
+          cp "fancy-plugin/target/release/${lib_name}" stage/
+          cp "fancy-plugin/${{ matrix.example.dir }}/plugin.example.ini" stage/
+          cp "fancy-plugin/${{ matrix.example.dir }}/README.md" stage/
+          tar czf "${archive}" -C stage .
+          echo "archive=${archive}" >> "$GITHUB_ENV"
 
       # ---- Package: Windows -----------------------------------------------
       - name: Assemble drop-in archive (Windows)
-        if: runner.os == 'Windows'
+        if: matrix.platform.packager == 'zip'
         shell: pwsh
         run: |
+          $lib = "${{ matrix.example.lib_stem }}.${{ matrix.platform.ext }}"
+          $archive = "${{ matrix.example.crate }}-${{ matrix.platform.arch }}.zip"
           New-Item -ItemType Directory -Force stage | Out-Null
-          Copy-Item "fancy-plugin\target\release\${{ matrix.cdylib }}" stage\
-          Copy-Item "fancy-plugin\plugin.example.ini" stage\
-          Copy-Item "fancy-plugin\README.md" stage\
-          Compress-Archive -Path "stage\*" -DestinationPath "${{ matrix.archive }}"
+          Copy-Item "fancy-plugin\target\release\$lib" stage\
+          Copy-Item "fancy-plugin\${{ matrix.example.dir }}\plugin.example.ini" stage\
+          Copy-Item "fancy-plugin\${{ matrix.example.dir }}\README.md" stage\
+          Compress-Archive -Path "stage\*" -DestinationPath $archive
+          "archive=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload drop-in archive
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.archive }}
-          path: ${{ matrix.archive }}
+          name: ${{ matrix.example.crate }}-${{ matrix.platform.arch }}
+          path: ${{ env.archive }}
 
   # ------------------------------------------------------------------
-  # Publish a GitHub Release and attach all three archives.
-  # Runs only when a `v*` tag is pushed (e.g. `git tag v0.2.0 && git push --tags`).
+  # Publish a GitHub Release and attach every archive.
+  # Runs only when a `v*` tag is pushed.
   # ------------------------------------------------------------------
   release:
     name: GitHub Release
@@ -171,8 +197,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            fancy-greeter-linux-x86_64.tar.gz
-            fancy-greeter-linux-aarch64.tar.gz
-            fancy-greeter-macos-aarch64.tar.gz
-            fancy-greeter-windows-x86_64.zip
+            fancy-*-linux-x86_64.tar.gz
+            fancy-*-linux-aarch64.tar.gz
+            fancy-*-macos-aarch64.tar.gz
+            fancy-*-windows-x86_64.zip
           generate_release_notes: true

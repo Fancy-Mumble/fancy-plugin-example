@@ -5,11 +5,11 @@
 //! * Sends a configurable greeting to every user immediately after they
 //!   connect (`on_client_connected`).
 //! * Answers `Ping` plugin messages with a `Pong` carrying the current
-//!   session count (`on_plugin_message`, the new wire-200 envelope).
-//! * Also responds to the legacy `PluginDataTransmission` flavour of
-//!   ping via `on_plugin_data`.
-//! * Serves a tiny `GET /status` JSON page over HTTP so operators can
-//!   verify the plugin is running without parsing log files.
+//!   session count (`on_plugin_message`, the wire-200 envelope).
+//!
+//! All inbound/outbound plugin traffic goes through the wire-200
+//! `PluginMessage` envelope (`on_plugin_message` / `send_plugin_message`).
+//! Fancy Mumble forbids the legacy `PluginDataTransmission` channel.
 //!
 //! # How dynamic loading works
 //!
@@ -27,31 +27,23 @@
 //! # Async model
 //!
 //! Trait methods on [`MumblePlugin`] are **synchronous** across the FFI
-//! boundary - the host calls them directly without a runtime in
-//! scope.  This plugin therefore owns its **private** tokio runtime
-//! (created in `on_load`, dropped in `on_unload`).  The HTTP status
-//! server is spawned on that runtime; synchronous hooks only need to
-//! mutate in-memory state and call back into the (sync) `ctx`.
+//! boundary - the host calls them directly without a runtime in scope.
+//! All hooks only mutate in-memory state and call back into the (sync) `ctx`.
 
 pub mod config;
-pub mod interactions;
-pub mod server;
 pub mod types;
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
-
-use abi_stable::std_types::{RArc, ROk, ROption, RResult, RSlice, RStr, RString, RVec};
-use mumble_plugin_api::{
-    fancy_export_plugin, ClientInfo, DebugRow, MumblePlugin, PluginContext_TO, PluginError,
-    PluginInfo, PluginMessageIn, PluginMessageOut, PluginResult, ServerId, SessionId,
-    INTERACTION_PAYLOAD_TYPE,
-};
-use tokio::runtime::Runtime;
+use std::sync::{Arc, Mutex};
 
 use crate::config::GreeterConfig;
-use crate::server::{ServerHandle, StatusData};
 use crate::types::{GreetingPayload, PingPayload, PongPayload, MSG_GREETING, MSG_PING, MSG_PONG};
+use abi_stable::std_types::{RArc, ROk, ROption, RResult, RStr, RString, RVec};
+use mumble_plugin_api::{
+    fancy_export_plugin, fancy_plugin, handler_id, message, row, show_modal, toast, Button,
+    ButtonStyle, ClientInfo, InteractionResponse, MumblePlugin, PluginContext_TO, PluginMessageIn,
+    PluginMessageOut, PluginResult, ServerId, SessionId, TextInput, TextInputStyle, ToastLevel,
+};
 
 /// Stable plugin identifier - matches the `plugin.<name>.` INI prefix.
 const PLUGIN_NAME: &str = "fancy-greeter";
@@ -69,20 +61,12 @@ const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// out a snapshot, drop the lock, and then call back into the host
 /// without risking re-entrant deadlocks.
 struct RunningState {
-    /// Plugin-owned tokio runtime.  Drop order matters: the
-    /// `ServerHandle` (which holds a `JoinHandle` from this runtime)
-    /// must be shut down *before* the runtime is dropped.
-    runtime: Runtime,
     /// Trait object for calling back into the host.
     ctx: PluginContext_TO<RArc<()>>,
     /// Frozen configuration snapshot read at load time.
     config: Arc<GreeterConfig>,
     /// `server_id` -> (`session_id` -> username).
     sessions: HashMap<ServerId, HashMap<SessionId, String>>,
-    /// Live stats shared with the HTTP `/status` handler.
-    status: Arc<RwLock<StatusData>>,
-    /// HTTP server handle; `None` if the TCP bind failed at load time.
-    http: Option<ServerHandle>,
 }
 
 impl std::fmt::Debug for RunningState {
@@ -120,98 +104,112 @@ impl GreeterPlugin {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Total live sessions across every server.  `0` before
+    /// `on_load` populates inner state.  Used by [`Self::info_json`]
+    /// (via the `plugin_info!` block) to expose a developer-panel row.
+    fn active_session_count(&self) -> usize {
+        with_state(&self.inner, |s| s.sessions.values().map(HashMap::len).sum()).unwrap_or(0)
+    }
+
+    /// Run `f` with a borrow of the host context.  Used by the
+    /// `#[fancy_plugin]`-generated dispatcher to ship
+    /// `InteractionResponse` envelopes back to the originating
+    /// client.  Returns `None` before `on_load` / after `on_unload`.
+    ///
+    /// Callback-style because `PluginContext_TO` is not `Clone`.
+    fn with_ctx<R>(&self, f: impl FnOnce(&PluginContext_TO<RArc<()>>) -> R) -> Option<R> {
+        with_state(&self.inner, |s| f(&s.ctx))
+    }
 }
 
 // ---------------------------------------------------------------------------
 // MumblePlugin implementation
 // ---------------------------------------------------------------------------
 
+#[fancy_plugin(name = PLUGIN_NAME, version = PLUGIN_VERSION)]
 impl MumblePlugin for GreeterPlugin {
-    fn name(&self) -> RStr<'_> {
-        RStr::from(PLUGIN_NAME)
-    }
-
-    fn version(&self) -> RStr<'_> {
-        RStr::from(PLUGIN_VERSION)
-    }
-
-    fn info_json(&self) -> RString {
-        let (sessions, port) = with_state(&self.inner, |state| {
-            let total: usize = state.sessions.values().map(HashMap::len).sum();
-            (total, state.config.http_port)
-        })
-        .unwrap_or((0, 0));
-
-        let info = PluginInfo {
-            description: "Example plugin: greets new users and answers Ping messages.".into(),
-            author: Some("Fancy Mumble".into()),
-            homepage: Some("https://github.com/Fancy-Mumble".into()),
-            capabilities: vec!["greeting".into(), "ping".into(), "http-status".into()],
-            debug_rows: vec![
-                DebugRow {
-                    label: "active_sessions".into(),
-                    value: sessions.to_string(),
-                },
-                DebugRow {
-                    label: "http_port".into(),
-                    value: port.to_string(),
+    // Manifest declaration.  The `slash_commands` block is intentionally
+    // absent - `#[fancy_plugin]` collects every `#[command]`-tagged
+    // method below and splices their entries into the manifest at
+    // build time.  Everything else (tags, debug_info, settings_panels,
+    // capabilities) stays declarative.
+    plugin_info! {
+        description: "Example plugin: greets new users and answers Ping messages.",
+        author: "Fancy Mumble",
+        homepage: "https://github.com/Fancy-Mumble",
+        tags: ["greeting", "ping"],
+        debug_info: {
+            "active_sessions" => self.active_session_count(),
+        },
+        manifest: {
+            capabilities: [SlashCommands, Components, Modals, Notifications, SettingsPanel],
+            settings_panels: [
+                {
+                    id: "status",
+                    title: "Greeter status",
+                    rows: [
+                        "Greeting template" => "Welcome, {username}!",
+                        "Tier-1 demo"       => "Type /greet <name> [loud=true] to try it",
+                    ],
                 },
             ],
-            client_manifest: Some(interactions::build_manifest()),
-        };
+        },
+    }
 
-        match info.to_validated_json() {
-            Ok(bytes) => RString::from(String::from_utf8_lossy(&bytes).into_owned()),
-            Err(e) => {
-                tracing::warn!(error = %e, "fancy-greeter: info_json validation failed");
-                RString::from("{}")
-            }
-        }
+    /// Send a friendly greeting.  Doc-comment becomes the slash-command
+    /// description in the auto-generated manifest entry.
+    #[command(name = "greet")]
+    fn greet(
+        &self,
+        #[option(description = "Who to greet")] name: String,
+        #[option(description = "Shout it from the rooftops")] loud: Option<bool>,
+    ) -> InteractionResponse {
+        let body = if loud.unwrap_or(false) {
+            format!("HELLO, {}!", name.to_uppercase())
+        } else {
+            format!("Hello, {name}!")
+        };
+        // Plain message + a "Greet again" button that re-opens the
+        // modal flow.  The button's `custom_id` is taken from the
+        // generated id table so it stays in lock-step with the
+        // `#[component] fn on_greet_again` handler below.
+        message!(
+            body,
+            row![
+                Button::new(handler_id!(Self::on_greet_again), "Greet again")
+                    .style(ButtonStyle::Primary)
+            ],
+        )
+    }
+
+    /// User clicked the "Greet again" button - open a modal that
+    /// collects a custom greeting message.
+    #[component]
+    fn on_greet_again(&self) -> InteractionResponse {
+        show_modal!(Self::on_greet_submit, "Send a custom greeting", {
+            message: TextInput::label("Greeting message")
+                .placeholder("Hi there!")
+                .style(TextInputStyle::Paragraph)
+                .max_length(280),
+        })
+    }
+
+    /// User submitted the modal - emit a success toast with the body.
+    #[modal]
+    fn on_greet_submit(&self, #[field] message: String) -> InteractionResponse {
+        toast!(format!("Greeting sent: {message}"), ToastLevel::Success)
     }
 
     fn on_load(&self, ctx: PluginContext_TO<RArc<()>>) -> PluginResult<()> {
-        let config = match GreeterConfig::from_lookup(|key| lookup_config(&ctx, key)) {
-            Ok(c) => Arc::new(c),
-            Err(e) => return RResult::RErr(PluginError::Config(RString::from(e.to_string()))),
-        };
-
-        let runtime = match build_runtime() {
-            Ok(rt) => rt,
-            Err(e) => return RResult::RErr(PluginError::from(e)),
-        };
-
-        let status = Arc::new(RwLock::new(StatusData {
-            active_sessions: 0,
-            greeting_template: config.greeting_template.clone(),
-        }));
-
-        let http = match runtime.block_on(server::start(Arc::clone(&status), config.http_port)) {
-            Ok(h) => {
-                tracing::info!(
-                    port = config.http_port,
-                    "fancy-greeter: HTTP status page ready"
-                );
-                Some(h)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    port = config.http_port,
-                    error = %e,
-                    "fancy-greeter: HTTP bind failed; continuing without status page"
-                );
-                None
-            }
-        };
+        let config = Arc::new(GreeterConfig::from_lookup(|key| lookup_config(&ctx, key)));
 
         store_state(
             &self.inner,
             RunningState {
-                runtime,
                 ctx,
                 config,
                 sessions: HashMap::new(),
-                status,
-                http,
             },
         );
 
@@ -220,11 +218,7 @@ impl MumblePlugin for GreeterPlugin {
     }
 
     fn on_unload(&self) -> PluginResult<()> {
-        if let Some(state) = take_state(&self.inner) {
-            if let Some(handle) = state.http {
-                state.runtime.block_on(handle.shutdown());
-            }
-            // `runtime` drops here; tokio shuts it down cleanly.
+        if take_state(&self.inner).is_some() {
             tracing::info!("{PLUGIN_NAME} unloaded");
         }
         ROk(())
@@ -238,11 +232,6 @@ impl MumblePlugin for GreeterPlugin {
                 .entry(info.server_id)
                 .or_default()
                 .insert(info.session_id, username.clone());
-
-            let total: usize = state.sessions.values().map(HashMap::len).sum();
-            if let Ok(mut s) = state.status.write() {
-                s.active_sessions = total;
-            }
 
             send_greeting(
                 &state.ctx,
@@ -262,11 +251,6 @@ impl MumblePlugin for GreeterPlugin {
                 .get_mut(&server_id)
                 .and_then(|m| m.remove(&session));
 
-            let total: usize = state.sessions.values().map(HashMap::len).sum();
-            if let Ok(mut s) = state.status.write() {
-                s.active_sessions = total;
-            }
-
             if let Some(name) = username {
                 let farewell = config::expand_template(&state.config.farewell_template, &name);
                 tracing::info!(server_id, session, "{farewell}");
@@ -275,37 +259,18 @@ impl MumblePlugin for GreeterPlugin {
         ROk(())
     }
 
-    fn on_plugin_data(
-        &self,
-        server_id: ServerId,
-        sender: SessionId,
-        data_id: RStr<'_>,
-        data: RSlice<'_, u8>,
-    ) -> PluginResult<()> {
-        if data_id.as_str() != MSG_PING {
-            return ROk(());
-        }
-        let _ = with_state(&self.inner, |state| {
-            let active: usize = state.sessions.values().map(HashMap::len).sum();
-            reply_pong_via_data(&state.ctx, server_id, sender, data.as_slice(), active);
-        });
-        ROk(())
-    }
-
+    // `#[fancy_plugin]` injects a dispatch prelude at the top of this
+    // body that routes every `Interaction` payload (SlashCommand,
+    // Component, ModalSubmit) to the matching `#[command]`,
+    // `#[component]`, or `#[modal]` method above.  Our manual body
+    // below only sees the payload types those handlers didn't claim
+    // (here: `Ping` envelopes).
     fn on_plugin_message(&self, msg: PluginMessageIn) -> PluginResult<()> {
-        match msg.payload_type.as_str() {
-            MSG_PING => {
-                let _ = with_state(&self.inner, |state| {
-                    let active: usize = state.sessions.values().map(HashMap::len).sum();
-                    reply_pong_via_message(&state.ctx, &msg, active);
-                });
-            }
-            INTERACTION_PAYLOAD_TYPE => {
-                let _ = with_state(&self.inner, |state| {
-                    interactions::dispatch(&state.ctx, &msg);
-                });
-            }
-            _ => {}
+        if msg.payload_type.as_str() == MSG_PING {
+            let _ = with_state(&self.inner, |state| {
+                let active: usize = state.sessions.values().map(HashMap::len).sum();
+                reply_pong(&state.ctx, &msg, active);
+            });
         }
         ROk(())
     }
@@ -347,14 +312,6 @@ fn take_state(cell: &Mutex<Option<RunningState>>) -> Option<RunningState> {
     cell.lock().ok().and_then(|mut g| g.take())
 }
 
-fn build_runtime() -> std::io::Result<Runtime> {
-    tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .thread_name("fancy-greeter")
-        .build()
-}
-
 fn lookup_config(ctx: &PluginContext_TO<RArc<()>>, key: &str) -> Option<String> {
     match ctx.get_config(RStr::from(key)) {
         ROption::RSome(v) => Some(v.into_string()),
@@ -381,81 +338,51 @@ fn send_greeting(
             return;
         }
     };
-    let result = ctx.send_plugin_data(
+    let mut targets: RVec<SessionId> = RVec::new();
+    targets.push(session_id);
+    let out = PluginMessageOut {
         server_id,
-        session_id,
-        RStr::from(MSG_GREETING),
-        RSlice::from(bytes.as_slice()),
-    );
-    if let RResult::RErr(e) = result {
+        plugin_name: RString::from(PLUGIN_NAME),
+        payload_type: RString::from(MSG_GREETING),
+        payload: RVec::from(bytes),
+        target_sessions: targets,
+        channel_id: ROption::RNone,
+    };
+    if let RResult::RErr(e) = ctx.send_plugin_message(out) {
         tracing::warn!(session = session_id, error = ?e, "fancy-greeter: send Greeting failed");
     }
 }
 
-fn reply_pong_via_data(
-    ctx: &PluginContext_TO<RArc<()>>,
-    server_id: ServerId,
-    sender: SessionId,
-    data: &[u8],
-    active_sessions: usize,
-) {
-    let Some(bytes) = encode_pong(data, sender, active_sessions) else {
-        return;
+fn reply_pong(ctx: &PluginContext_TO<RArc<()>>, msg: &PluginMessageIn, active_sessions: usize) {
+    let ping: PingPayload = match serde_json::from_slice(msg.payload.as_slice()) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(sender = msg.sender_session, "fancy-greeter: bad Ping: {e}");
+            return;
+        }
     };
-    let result = ctx.send_plugin_data(
-        server_id,
-        sender,
-        RStr::from(MSG_PONG),
-        RSlice::from(bytes.as_slice()),
-    );
-    if let RResult::RErr(e) = result {
-        tracing::warn!(session = sender, error = ?e, "fancy-greeter: send Pong (data) failed");
-    }
-}
-
-fn reply_pong_via_message(
-    ctx: &PluginContext_TO<RArc<()>>,
-    msg: &PluginMessageIn,
-    active_sessions: usize,
-) {
-    let Some(bytes) = encode_pong(msg.payload.as_slice(), msg.sender_session, active_sessions)
-    else {
-        return;
+    let bytes = match serde_json::to_vec(&PongPayload {
+        nonce: ping.nonce,
+        active_sessions,
+    }) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!("fancy-greeter: serialize Pong failed: {e}");
+            return;
+        }
     };
+    let mut targets: RVec<SessionId> = RVec::new();
+    targets.push(msg.sender_session);
     let reply = PluginMessageOut {
         server_id: msg.server_id,
         plugin_name: RString::from(PLUGIN_NAME),
         payload_type: RString::from(MSG_PONG),
         payload: RVec::from(bytes),
-        target_sessions: {
-            let mut v: RVec<SessionId> = RVec::new();
-            v.push(msg.sender_session);
-            v
-        },
+        target_sessions: targets,
         channel_id: ROption::RNone,
     };
     if let RResult::RErr(e) = ctx.send_plugin_message(reply) {
-        tracing::warn!(error = ?e, "fancy-greeter: send Pong (message) failed");
-    }
-}
-
-fn encode_pong(data: &[u8], sender: SessionId, active_sessions: usize) -> Option<Vec<u8>> {
-    let ping: PingPayload = match serde_json::from_slice(data) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!(sender, "fancy-greeter: bad Ping: {e}");
-            return None;
-        }
-    };
-    match serde_json::to_vec(&PongPayload {
-        nonce: ping.nonce,
-        active_sessions,
-    }) {
-        Ok(b) => Some(b),
-        Err(e) => {
-            tracing::warn!("fancy-greeter: serialize Pong failed: {e}");
-            None
-        }
+        tracing::warn!(error = ?e, "fancy-greeter: send Pong failed");
     }
 }
 

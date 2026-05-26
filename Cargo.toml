@@ -1,57 +1,49 @@
-[package]
-name = "fancy-greeter"
+# ---------------------------------------------------------------------------
+# Cargo workspace for the Fancy Mumble plugin examples.
+#
+# Each member crate under `examples/<name>/` is a self-contained plugin
+# that compiles to its own `cdylib` and ships as its own CI artefact.
+# Keep the individual examples small and focused; add a new member
+# rather than piling features onto an existing one.
+# ---------------------------------------------------------------------------
+[workspace]
+resolver = "2"
+members = [
+    "examples/greeter",
+    "examples/gallery-showcase",
+    "examples/info-card",
+    "examples/feedback-form",
+]
+
+# ---------------------------------------------------------------------------
+# Shared package metadata.  Members override `name` and `description`
+# but inherit version/edition/license so we bump them in one place.
+# ---------------------------------------------------------------------------
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
-description = "Example Fancy Mumble server plugin - annotated reference implementation"
 license = "MIT"
+authors = ["Fancy Mumble"]
+repository = "https://github.com/Fancy-Mumble/fancy-plugin-example"
 
-# This crate is a dynamically loaded plugin.
-#
-# - `cdylib` is what the Mumble plugin host actually dlopen()s from the
-#   `/etc/mumble/plugins` directory at runtime.
-# - `rlib` is kept around so unit and integration tests can link the
-#   plugin like an ordinary Rust library.
-[lib]
-crate-type = ["cdylib", "rlib"]
-
-[dependencies]
-# The ABI-stable plugin API.  Path dependency points at the Fancy Mumble
-# server checkout next to this repo; switch to a `git` or `version`
-# reference once `mumble-plugin-api` is published.
+# ---------------------------------------------------------------------------
+# Shared dependency declarations.  Members opt in with
+# `mumble-plugin-api = { workspace = true }` so the path / version is
+# defined exactly once.
+# ---------------------------------------------------------------------------
+[workspace.dependencies]
 mumble-plugin-api = { path = "../mumble-server/3rdparty/mumble-plugin-host/api" }
-
-# Required for the FFI-safe trait objects (`RStr`, `RString`, `RArc`,
-# `ROption`, `RVec`, `RResult`).  Must match the version used by the
-# host (currently 0.11) or the loader will reject the cdylib.
 abi_stable = "0.11"
-
-# Each plugin owns its private tokio runtime - the host calls our trait
-# methods synchronously across the FFI boundary, so anything async (the
-# HTTP server, future network I/O) must be driven by a runtime we manage
-# ourselves.
-tokio = { version = "1", features = ["net", "sync", "macros", "time", "rt-multi-thread"] }
-
-# HTTP status page served at http://127.0.0.1:<http_port>/status
-axum = "0.8"
-
-# Serialisation for the wire-level message payloads
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-# Error types
-thiserror = "2"
-
-# Structured logging.  The host already initialises the global tracing
-# subscriber; plugins just emit spans and events.
 tracing = "0.1"
 
-[dev-dependencies]
-
-# ---- Lint configuration ---------------------------------------------------
-# These mirror the workspace-wide lints from mumble-plugin-host so the
-# example compiles cleanly in the same CI environment.
-
-[lints.rust]
+# ---------------------------------------------------------------------------
+# Workspace-wide lint configuration.  Members opt in via
+# `[lints] workspace = true` so the policy is defined in one place.
+# Mirrors the lints used by `mumble-plugin-host` itself.
+# ---------------------------------------------------------------------------
+[workspace.lints.rust]
 unsafe_code = "deny"
 missing_docs = "deny"
 unused_crate_dependencies = "warn"
@@ -60,10 +52,10 @@ missing_debug_implementations = "deny"
 unreachable_pub = "warn"
 unused_qualifications = "warn"
 
-[lints.rustdoc]
+[workspace.lints.rustdoc]
 broken_intra_doc_links = "deny"
 
-[lints.clippy]
+[workspace.lints.clippy]
 correctness    = { level = "deny",  priority = -1 }
 suspicious     = { level = "warn",  priority = -1 }
 style          = { level = "warn",  priority = -1 }
@@ -74,3 +66,12 @@ too_many_lines         = "deny"
 allow_attributes_without_reason = "deny"
 uninlined_format_args  = "warn"
 doc_markdown           = "warn"
+
+# ---------------------------------------------------------------------------
+# Release profile - small, stripped cdylibs suitable for shipping to
+# `/etc/mumble/plugins`.
+# ---------------------------------------------------------------------------
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"

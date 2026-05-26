@@ -1,0 +1,18 @@
+[package]
+name = "fancy-feedback-form"
+description = "Example Fancy Mumble plugin - demonstrates a multi-field modal form."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+mumble-plugin-api = { workspace = true }
+abi_stable = { workspace = true }
+
+[lints]
+workspace = true

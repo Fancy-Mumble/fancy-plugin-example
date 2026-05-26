@@ -1,0 +1,3 @@
+# Keep build contexts tiny: exclude build artefacts and VCS metadata.
+target/
+.git/

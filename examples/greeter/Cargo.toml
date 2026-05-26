@@ -1,0 +1,30 @@
+[package]
+name = "fancy-greeter"
+description = "Example Fancy Mumble server plugin - annotated reference implementation."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+# This crate is a dynamically loaded plugin.
+#
+# - `cdylib` is what the Mumble plugin host actually dlopen()s from the
+#   `/etc/mumble/plugins` directory at runtime.
+# - `rlib` is kept around so unit and integration tests can link the
+#   plugin like an ordinary Rust library.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The ABI-stable plugin API and its FFI-safe re-exports.  Versions /
+# paths live in the workspace root so every example agrees on a single
+# `mumble-plugin-host` checkout.
+mumble-plugin-api = { workspace = true }
+abi_stable = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true
