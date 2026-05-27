@@ -13,6 +13,8 @@ members = [
     "examples/gallery-showcase",
     "examples/info-card",
     "examples/feedback-form",
+    "examples/chat-card",
+    "examples/quick-poll",
 ]
 
 # ---------------------------------------------------------------------------

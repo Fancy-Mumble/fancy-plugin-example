@@ -38,11 +38,11 @@ use std::sync::{Arc, Mutex};
 
 use crate::config::GreeterConfig;
 use crate::types::{GreetingPayload, PingPayload, PongPayload, MSG_GREETING, MSG_PING, MSG_PONG};
-use abi_stable::std_types::{RArc, ROk, ROption, RResult, RStr, RString, RVec};
+use abi_stable::std_types::ROk;
 use mumble_plugin_api::{
     fancy_export_plugin, fancy_plugin, handler_id, message, row, show_modal, toast, Button,
-    ButtonStyle, ClientInfo, InteractionResponse, MumblePlugin, PluginContext_TO, PluginMessageIn,
-    PluginMessageOut, PluginResult, ServerId, SessionId, TextInput, TextInputStyle, ToastLevel,
+    ButtonStyle, ClientInfo, Host, InteractionResponse, PluginMessageIn, PluginResult, ServerId,
+    SessionId, TextInput, TextInputStyle, ToastLevel,
 };
 
 /// Stable plugin identifier - matches the `plugin.<name>.` INI prefix.
@@ -55,14 +55,11 @@ const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 // Runtime state
 // ---------------------------------------------------------------------------
 
-/// Everything created in `on_load` and torn down in `on_unload`.
-///
-/// Owned by the plugin behind a `Mutex<Option<...>>` so hooks can take
-/// out a snapshot, drop the lock, and then call back into the host
-/// without risking re-entrant deadlocks.
+/// Mutable runtime state created in `on_load` and torn down in
+/// `on_unload`.  The plugin host owns the `PluginContext` itself and
+/// hands one out to every callback via [`Host`], so this struct only
+/// carries per-plugin state.
 struct RunningState {
-    /// Trait object for calling back into the host.
-    ctx: PluginContext_TO<RArc<()>>,
     /// Frozen configuration snapshot read at load time.
     config: Arc<GreeterConfig>,
     /// `server_id` -> (`session_id` -> username).
@@ -88,7 +85,7 @@ impl std::fmt::Debug for RunningState {
 /// Annotated example plugin - greets new users and answers Ping messages.
 #[derive(Default)]
 pub struct GreeterPlugin {
-    /// `None` before `on_load` and after `on_unload`, `Some` in between.
+    /// Per-plugin state.  Locked only briefly inside each callback.
     inner: Mutex<Option<RunningState>>,
 }
 
@@ -111,16 +108,6 @@ impl GreeterPlugin {
     fn active_session_count(&self) -> usize {
         with_state(&self.inner, |s| s.sessions.values().map(HashMap::len).sum()).unwrap_or(0)
     }
-
-    /// Run `f` with a borrow of the host context.  Used by the
-    /// `#[fancy_plugin]`-generated dispatcher to ship
-    /// `InteractionResponse` envelopes back to the originating
-    /// client.  Returns `None` before `on_load` / after `on_unload`.
-    ///
-    /// Callback-style because `PluginContext_TO` is not `Clone`.
-    fn with_ctx<R>(&self, f: impl FnOnce(&PluginContext_TO<RArc<()>>) -> R) -> Option<R> {
-        with_state(&self.inner, |s| f(&s.ctx))
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -128,7 +115,7 @@ impl GreeterPlugin {
 // ---------------------------------------------------------------------------
 
 #[fancy_plugin(name = PLUGIN_NAME, version = PLUGIN_VERSION)]
-impl MumblePlugin for GreeterPlugin {
+impl GreeterPlugin {
     // Manifest declaration.  The `slash_commands` block is intentionally
     // absent - `#[fancy_plugin]` collects every `#[command]`-tagged
     // method below and splices their entries into the manifest at
@@ -201,50 +188,49 @@ impl MumblePlugin for GreeterPlugin {
         toast!(format!("Greeting sent: {message}"), ToastLevel::Success)
     }
 
-    fn on_load(&self, ctx: PluginContext_TO<RArc<()>>) -> PluginResult<()> {
-        let config = Arc::new(GreeterConfig::from_lookup(|key| lookup_config(&ctx, key)));
-
+    fn on_load(&self, host: Host<'_>) -> PluginResult<()> {
+        let config = Arc::new(GreeterConfig::from_lookup(|key| host.get_config(key)));
         store_state(
             &self.inner,
             RunningState {
-                ctx,
                 config,
                 sessions: HashMap::new(),
             },
         );
-
         tracing::info!("{PLUGIN_NAME} v{PLUGIN_VERSION} loaded");
         ROk(())
     }
 
-    fn on_unload(&self) -> PluginResult<()> {
+    fn on_unload(&self, _host: Host<'_>) -> PluginResult<()> {
         if take_state(&self.inner).is_some() {
             tracing::info!("{PLUGIN_NAME} unloaded");
         }
         ROk(())
     }
 
-    fn on_client_connected(&self, info: ClientInfo) -> PluginResult<()> {
+    fn on_client_connected(&self, host: Host<'_>, info: ClientInfo) -> PluginResult<()> {
         let username = info.username.as_str().to_owned();
-        let _ = with_state_mut(&self.inner, |state| {
+        let snapshot = with_state_mut(&self.inner, |state| {
             let _ = state
                 .sessions
                 .entry(info.server_id)
                 .or_default()
                 .insert(info.session_id, username.clone());
-
-            send_greeting(
-                &state.ctx,
-                &state.config,
-                info.server_id,
-                info.session_id,
-                &username,
-            );
+            Arc::clone(&state.config)
         });
+        let Some(config) = snapshot else {
+            return ROk(());
+        };
+        send_greeting(host, &config, info.server_id, info.session_id, &username);
         ROk(())
     }
 
-    fn on_client_disconnected(&self, server_id: ServerId, session: SessionId) -> PluginResult<()> {
+    fn on_client_disconnected(
+        &self,
+        _host: Host<'_>,
+        server_id: ServerId,
+        session: SessionId,
+    ) -> PluginResult<()> {
         let _ = with_state_mut(&self.inner, |state| {
             let username = state
                 .sessions
@@ -259,18 +245,19 @@ impl MumblePlugin for GreeterPlugin {
         ROk(())
     }
 
-    // `#[fancy_plugin]` injects a dispatch prelude at the top of this
-    // body that routes every `Interaction` payload (SlashCommand,
-    // Component, ModalSubmit) to the matching `#[command]`,
-    // `#[component]`, or `#[modal]` method above.  Our manual body
-    // below only sees the payload types those handlers didn't claim
-    // (here: `Ping` envelopes).
-    fn on_plugin_message(&self, msg: PluginMessageIn) -> PluginResult<()> {
+    // `#[fancy_plugin]` injects a dispatch prelude in the generated
+    // `MumblePlugin::on_plugin_message` wrapper that builds a `Host`
+    // from the borrowed context and routes every `Interaction`
+    // payload to the matching `#[command]` / `#[component]` /
+    // `#[modal]` method above.  Only payload types those handlers
+    // don't claim reach us here (e.g. `Ping`).
+    fn on_plugin_message(&self, host: Host<'_>, msg: PluginMessageIn) -> PluginResult<()> {
         if msg.payload_type.as_str() == MSG_PING {
-            let _ = with_state(&self.inner, |state| {
-                let active: usize = state.sessions.values().map(HashMap::len).sum();
-                reply_pong(&state.ctx, &msg, active);
-            });
+            let active = with_state(&self.inner, |state| {
+                state.sessions.values().map(HashMap::len).sum::<usize>()
+            })
+            .unwrap_or(0);
+            reply_pong(host, &msg, active);
         }
         ROk(())
     }
@@ -312,19 +299,8 @@ fn take_state(cell: &Mutex<Option<RunningState>>) -> Option<RunningState> {
     cell.lock().ok().and_then(|mut g| g.take())
 }
 
-fn lookup_config(ctx: &PluginContext_TO<RArc<()>>, key: &str) -> Option<String> {
-    match ctx.get_config(RStr::from(key)) {
-        ROption::RSome(v) => Some(v.into_string()),
-        ROption::RNone => None,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Outbound helpers
-// ---------------------------------------------------------------------------
-
 fn send_greeting(
-    ctx: &PluginContext_TO<RArc<()>>,
+    host: Host<'_>,
     config: &GreeterConfig,
     server_id: ServerId,
     session_id: SessionId,
@@ -338,22 +314,12 @@ fn send_greeting(
             return;
         }
     };
-    let mut targets: RVec<SessionId> = RVec::new();
-    targets.push(session_id);
-    let out = PluginMessageOut {
-        server_id,
-        plugin_name: RString::from(PLUGIN_NAME),
-        payload_type: RString::from(MSG_GREETING),
-        payload: RVec::from(bytes),
-        target_sessions: targets,
-        channel_id: ROption::RNone,
-    };
-    if let RResult::RErr(e) = ctx.send_plugin_message(out) {
+    if let Err(e) = host.send_to_sessions(server_id, &[session_id], MSG_GREETING, &bytes) {
         tracing::warn!(session = session_id, error = ?e, "fancy-greeter: send Greeting failed");
     }
 }
 
-fn reply_pong(ctx: &PluginContext_TO<RArc<()>>, msg: &PluginMessageIn, active_sessions: usize) {
+fn reply_pong(host: Host<'_>, msg: &PluginMessageIn, active_sessions: usize) {
     let ping: PingPayload = match serde_json::from_slice(msg.payload.as_slice()) {
         Ok(p) => p,
         Err(e) => {
@@ -371,17 +337,7 @@ fn reply_pong(ctx: &PluginContext_TO<RArc<()>>, msg: &PluginMessageIn, active_se
             return;
         }
     };
-    let mut targets: RVec<SessionId> = RVec::new();
-    targets.push(msg.sender_session);
-    let reply = PluginMessageOut {
-        server_id: msg.server_id,
-        plugin_name: RString::from(PLUGIN_NAME),
-        payload_type: RString::from(MSG_PONG),
-        payload: RVec::from(bytes),
-        target_sessions: targets,
-        channel_id: ROption::RNone,
-    };
-    if let RResult::RErr(e) = ctx.send_plugin_message(reply) {
+    if let Err(e) = host.reply_to(msg, MSG_PONG, &bytes) {
         tracing::warn!(error = ?e, "fancy-greeter: send Pong failed");
     }
 }

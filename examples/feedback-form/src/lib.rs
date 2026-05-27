@@ -12,24 +12,17 @@
 //! [`RadioGroup`]: mumble_plugin_api::RadioGroup
 //! [`CheckboxGroup`]: mumble_plugin_api::CheckboxGroup
 
-use std::sync::Mutex;
-
-use abi_stable::std_types::{RArc, ROk};
 use mumble_plugin_api::{
-    fancy_export_plugin, fancy_plugin, show_modal, toast, InteractionResponse, MumblePlugin,
-    PluginContext_TO, PluginResult, TextInput, TextInputStyle, ToastLevel,
+    fancy_export_plugin, fancy_plugin, show_modal, toast, InteractionResponse, TextInput,
+    TextInputStyle, ToastLevel,
 };
 
 const PLUGIN_NAME: &str = "fancy-feedback-form";
 const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Stateless apart from the host context kept around so the
-/// `#[fancy_plugin]`-generated dispatcher can reach the originating
-/// client.
+/// Stateless plugin.
 #[derive(Default)]
-pub struct FeedbackForm {
-    ctx: Mutex<Option<PluginContext_TO<RArc<()>>>>,
-}
+pub struct FeedbackForm;
 
 impl std::fmt::Debug for FeedbackForm {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -37,17 +30,8 @@ impl std::fmt::Debug for FeedbackForm {
     }
 }
 
-impl FeedbackForm {
-    /// Run `f` with a borrow of the host context.  Returns `None`
-    /// outside the [`on_load`](Self::on_load) / [`on_unload`](Self::on_unload)
-    /// window.
-    fn with_ctx<R>(&self, f: impl FnOnce(&PluginContext_TO<RArc<()>>) -> R) -> Option<R> {
-        self.ctx.lock().ok()?.as_ref().map(f)
-    }
-}
-
 #[fancy_plugin(name = PLUGIN_NAME, version = PLUGIN_VERSION)]
-impl MumblePlugin for FeedbackForm {
+impl FeedbackForm {
     plugin_info! {
         description: "Demo plugin: opens a multi-field feedback modal and toasts on submit.",
         author: "Fancy Mumble",
@@ -87,20 +71,6 @@ impl MumblePlugin for FeedbackForm {
             format!("Thanks - logged \"{subject}\" ({} chars).", body.len()),
             ToastLevel::Success,
         )
-    }
-
-    fn on_load(&self, ctx: PluginContext_TO<RArc<()>>) -> PluginResult<()> {
-        if let Ok(mut slot) = self.ctx.lock() {
-            *slot = Some(ctx);
-        }
-        ROk(())
-    }
-
-    fn on_unload(&self) -> PluginResult<()> {
-        if let Ok(mut slot) = self.ctx.lock() {
-            *slot = None;
-        }
-        ROk(())
     }
 }
 

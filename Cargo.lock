@@ -114,6 +114,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
+name = "fancy-chat-card"
+version = "0.1.0"
+dependencies = [
+ "abi_stable",
+ "mumble-plugin-api",
+]
+
+[[package]]
 name = "fancy-feedback-form"
 version = "0.1.0"
 dependencies = [
@@ -142,6 +150,14 @@ dependencies = [
 
 [[package]]
 name = "fancy-info-card"
+version = "0.1.0"
+dependencies = [
+ "abi_stable",
+ "mumble-plugin-api",
+]
+
+[[package]]
+name = "fancy-quick-poll"
 version = "0.1.0"
 dependencies = [
  "abi_stable",

@@ -13,25 +13,17 @@
 //! [`MediaGallery`]: mumble_plugin_api::MediaGallery
 //! [`Container`]: mumble_plugin_api::Container
 
-use std::sync::Mutex;
-
-use abi_stable::std_types::{RArc, ROk};
 use mumble_plugin_api::{
     container, fancy_export_plugin, fancy_plugin, media_gallery, row, section, text_display,
-    thumbnail, Component, InteractionResponse, MediaGalleryItem, MumblePlugin, PluginContext_TO,
-    PluginResult,
+    thumbnail, Component, InteractionResponse, MediaGalleryItem,
 };
 
 const PLUGIN_NAME: &str = "fancy-gallery-showcase";
 const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Stateless apart from the host context stored at load time so the
-/// `#[fancy_plugin]`-generated dispatcher can ship replies back to
-/// the originating client.
+/// Stateless plugin.
 #[derive(Default)]
-pub struct GalleryShowcase {
-    ctx: Mutex<Option<PluginContext_TO<RArc<()>>>>,
-}
+pub struct GalleryShowcase;
 
 impl std::fmt::Debug for GalleryShowcase {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -39,19 +31,8 @@ impl std::fmt::Debug for GalleryShowcase {
     }
 }
 
-impl GalleryShowcase {
-    /// Run `f` with a borrow of the host context.  Required by the
-    /// `#[fancy_plugin]`-generated `on_plugin_message` to ship
-    /// [`InteractionResponse`] envelopes back to the originating
-    /// client.  Returns `None` before [`on_load`](Self::on_load) and
-    /// after [`on_unload`](Self::on_unload).
-    fn with_ctx<R>(&self, f: impl FnOnce(&PluginContext_TO<RArc<()>>) -> R) -> Option<R> {
-        self.ctx.lock().ok()?.as_ref().map(f)
-    }
-}
-
 #[fancy_plugin(name = PLUGIN_NAME, version = PLUGIN_VERSION)]
-impl MumblePlugin for GalleryShowcase {
+impl GalleryShowcase {
     plugin_info! {
         description: "Demo plugin: showcases TextDisplay, Thumbnail, MediaGallery and Container.",
         author: "Fancy Mumble",
@@ -98,20 +79,6 @@ impl MumblePlugin for GalleryShowcase {
         InteractionResponse::message("Visual components demo:")
             .row(row![header])
             .row(row![gallery])
-    }
-
-    fn on_load(&self, ctx: PluginContext_TO<RArc<()>>) -> PluginResult<()> {
-        if let Ok(mut slot) = self.ctx.lock() {
-            *slot = Some(ctx);
-        }
-        ROk(())
-    }
-
-    fn on_unload(&self) -> PluginResult<()> {
-        if let Ok(mut slot) = self.ctx.lock() {
-            *slot = None;
-        }
-        ROk(())
     }
 }
 

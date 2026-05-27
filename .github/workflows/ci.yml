@@ -92,6 +92,12 @@ jobs:
           - crate: fancy-feedback-form
             lib_stem: fancy_feedback_form
             dir: examples/feedback-form
+          - crate: fancy-quick-poll
+            lib_stem: fancy_quick_poll
+            dir: examples/quick-poll
+          - crate: fancy-chat-card
+            lib_stem: fancy_chat_card
+            dir: examples/chat-card
 
         # ---- One entry per target platform ----------------------------
         platform:
