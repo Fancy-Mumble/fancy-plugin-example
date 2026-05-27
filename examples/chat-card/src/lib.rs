@@ -65,10 +65,7 @@ impl ChatCard {
              This bubble is a real chat message authored by `fancy-chat-card`. \
              The button below is routed back to the plugin just like any \
              component on a floating card.",
-            row![
-                Button::new(handler_id!(Self::on_click), "Click me")
-                    .style(ButtonStyle::Primary)
-            ],
+            row![Button::new(handler_id!(Self::on_click), "Click me").style(ButtonStyle::Primary)],
         )
     }
 

@@ -34,19 +34,21 @@
 //! * Voter dedup uses the caller's session id.  Reconnecting (which
 //!   mints a new session id) lets the same user vote again.
 
-#![allow(clippy::unwrap_used, reason = "Mutexes are private; lock never poisoned in practice")]
+#![allow(
+    clippy::unwrap_used,
+    reason = "Mutexes are private; lock never poisoned in practice"
+)]
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
+use abi_stable::std_types::ROk;
 use mumble_plugin_api::{
     fancy_export_plugin, fancy_plugin, handler_id, row, show_modal, text_display, toast,
-    update_message, ActionRow, CheckboxGroup, CheckboxOption, Host,
-    InteractionResponse, PluginResult, RadioGroup, RadioOption, SessionId, TextInput,
-    TextInputStyle, ToastLevel,
+    update_message, ActionRow, CheckboxGroup, CheckboxOption, Host, InteractionResponse,
+    PluginResult, RadioGroup, RadioOption, SessionId, TextInput, TextInputStyle, ToastLevel,
 };
-use abi_stable::std_types::ROk;
 
 const PLUGIN_NAME: &str = "fancy-quick-poll";
 const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -135,10 +137,10 @@ impl QuickPoll {
     fn poll(
         &self,
         host: Host<'_>,
-        #[option(description = "Optional question (otherwise the modal asks)")]
-        question: Option<String>,
-        #[option(description = "Allow voting for multiple options at once")]
-        multi: Option<bool>,
+        #[option(description = "Optional question (otherwise the modal asks)")] question: Option<
+            String,
+        >,
+        #[option(description = "Allow voting for multiple options at once")] multi: Option<bool>,
     ) -> InteractionResponse {
         let multi = multi.unwrap_or(false);
         if let Some(caller) = host.caller() {
@@ -214,19 +216,13 @@ impl QuickPoll {
             .or(stashed.channel_id)
             .or_else(|| host.current_channel(caller.server_id, caller.session_id))
         else {
-            return toast!(
-                "Open a channel before starting a poll.",
-                ToastLevel::Error,
-            );
+            return toast!("Open a channel before starting a poll.", ToastLevel::Error,);
         };
         let multi = stashed.multi;
 
         let recipients = host.sessions_in_channel(caller.server_id, channel_id);
         if recipients.is_empty() {
-            return toast!(
-                "No active listeners in this channel.",
-                ToastLevel::Warning,
-            );
+            return toast!("No active listeners in this channel.", ToastLevel::Warning,);
         }
 
         let poll_id = self.next_poll_id();
@@ -263,7 +259,10 @@ impl QuickPoll {
         host.respond_to_sessions(caller.server_id, &recipients, broadcast);
 
         toast!(
-            format!("Poll \"{poll_id}\" sent to {} recipient(s).", recipients.len()),
+            format!(
+                "Poll \"{poll_id}\" sent to {} recipient(s).",
+                recipients.len()
+            ),
             ToastLevel::Success,
         )
     }
@@ -416,10 +415,7 @@ impl QuickPoll {
         } else {
             let mut group = RadioGroup::new(custom_id).required(false);
             for (idx, label) in state.options.iter().enumerate() {
-                group = group.option(RadioOption::new(
-                    format!("{poll_id}:{idx}"),
-                    label.clone(),
-                ));
+                group = group.option(RadioOption::new(format!("{poll_id}:{idx}"), label.clone()));
             }
             row![group]
         }
